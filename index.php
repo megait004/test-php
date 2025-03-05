@@ -1,189 +1,272 @@
 <?php
 session_start();
-include_once 'config/Database.php';
-include_once 'Api/Product.php';
-// include_once 'models/User.php';
-// include_once 'models/Order.php';
-// include_once 'models/Cart.php';
-$database = new Database();
-$db = $database->getConnection();
+require_once 'config/database.php';
 
-// Initialize the Product model
-$product = new Product($db);
+// Lấy danh sách tài liệu mới nhất
+$latest_docs = $conn->query("
+    SELECT d.*, u.full_name as uploader_name,
+           COUNT(DISTINCT l.id) as like_count,
+           COUNT(DISTINCT c.id) as comment_count
+    FROM documents d
+    LEFT JOIN users u ON d.user_id = u.id
+    LEFT JOIN likes l ON d.id = l.document_id
+    LEFT JOIN comments c ON d.id = c.document_id
+    GROUP BY d.id
+    ORDER BY d.created_at DESC
+    LIMIT 6
+")->fetchAll();
 
-$page = isset($_GET['page']) ? $_GET['page'] : 1;
-$products = $product->getProducts($page);
-$total_products = $product->getTotalProducts();
-$total_pages = ceil($total_products / 10);
+// Lấy tài liệu phổ biến nhất
+$popular_docs = $conn->query("
+    SELECT d.*, u.full_name as uploader_name,
+           COUNT(DISTINCT l.id) as like_count,
+           COUNT(DISTINCT c.id) as comment_count
+    FROM documents d
+    LEFT JOIN users u ON d.user_id = u.id
+    LEFT JOIN likes l ON d.id = l.document_id
+    LEFT JOIN comments c ON d.id = c.document_id
+    GROUP BY d.id
+    ORDER BY (like_count + comment_count) DESC
+    LIMIT 6
+")->fetchAll();
+
+// Lấy tất cả tags để làm menu
+$tags = $conn->query("
+    SELECT t.*, COUNT(dt.document_id) as doc_count
+    FROM tags t
+    LEFT JOIN document_tags dt ON t.id = dt.tag_id
+    GROUP BY t.id
+    HAVING doc_count > 0
+    ORDER BY doc_count DESC
+")->fetchAll();
+
+// Hàm lấy tags cho mỗi tài liệu
+function getDocumentTags($conn, $document_id) {
+    $stmt = $conn->prepare("
+        SELECT t.name, t.id
+        FROM tags t
+        JOIN document_tags dt ON t.id = dt.tag_id
+        WHERE dt.document_id = ?
+    ");
+    $stmt->execute([$document_id]);
+    return $stmt->fetchAll();
+}
 ?>
-
 <!DOCTYPE html>
-<html>
+<html lang="vi">
 <head>
-    <title>Shop Bán Hàng</title>
-    <link rel="stylesheet" href="assets/css/style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hệ thống quản lý tài liệu</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        .product-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-            gap: 20px;
-            padding: 20px;
+        .hero-section {
+            background: linear-gradient(135deg, #0061f2 0%, #00ba94 100%);
+            color: white;
+            padding: 4rem 0;
+            margin-bottom: 2rem;
         }
-        .product-card {
-            background: white;
-            border-radius: 8px;
-            padding: 15px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        .card {
             transition: transform 0.2s;
+            margin-bottom: 1rem;
         }
-        .product-card:hover {
+        .card:hover {
             transform: translateY(-5px);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
         }
-        .product-image {
-            width: 100%;
-            height: 200px;
-            object-fit: cover;
-            border-radius: 4px;
-        }
-        .product-title {
-            font-size: 1.2em;
-            margin: 10px 0;
-            color: #333;
-        }
-        .product-price {
-            font-size: 1.1em;
-            color: #e44d26;
-            font-weight: bold;
-            margin: 10px 0;
-        }
-        .product-origin {
-            color: #666;
-            font-size: 0.9em;
-        }
-        .add-to-cart {
-            background: #4CAF50;
-            color: white;
-            border: none;
-            padding: 8px 15px;
-            border-radius: 4px;
-            cursor: pointer;
-            width: 100%;
-            margin-top: 10px;
-        }
-        .add-to-cart:hover {
-            background: #45a049;
-        }
-        .quantity-input {
-            width: 60px;
-            padding: 5px;
-            margin-right: 10px;
-        }
-        .header {
-            background: #333;
-            color: white;
-            padding: 1rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .header a {
-            color: white;
+        .tag-badge {
             text-decoration: none;
-            margin-left: 15px;
+            transition: all 0.2s;
         }
-        .header a:hover {
-            color: #ddd;
+        .tag-badge:hover {
+            transform: scale(1.05);
         }
-        .pagination {
-            display: flex;
-            justify-content: center;
-            margin: 20px 0;
+        .section-title {
+            position: relative;
+            padding-bottom: 1rem;
+            margin-bottom: 2rem;
         }
-        .pagination a {
-            padding: 8px 16px;
-            margin: 0 4px;
-            border: 1px solid #ddd;
-            text-decoration: none;
-            color: #333;
+        .section-title::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 50px;
+            height: 3px;
+            background: #0061f2;
         }
-        .pagination a:hover {
-            background-color: #ddd;
+        .stats-box {
+            text-align: center;
+            padding: 1.5rem;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
-        .success-message {
-            background: #d4edda;
-            color: #155724;
-            padding: 10px;
-            margin: 10px 0;
-            border-radius: 4px;
-            display: none;
+        .stats-box i {
+            font-size: 2rem;
+            margin-bottom: 1rem;
+            color: #0061f2;
         }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>Shop Bán Hàng</h1>
-        <div>
-            <?php if(isset($_SESSION['user'])): ?>
-                <span>Xin chào <?php echo $_SESSION['user']['username']; ?></span>
-                <a href="logout.php">Đăng xuất</a>
-            <?php else: ?>
-                <a href="login.php">Đăng nhập</a>
-                <a href="register.php">Đăng ký</a>
-            <?php endif; ?>
-            <a href="cart.php">Giỏ hàng</a>
-        </div>
-    </div>
+    <?php include 'includes/header.php'; ?>
 
-    <div id="success-message" class="success-message">
-        Sản phẩm đã được thêm vào giỏ hàng!
-    </div>
-
-    <div class="product-grid">
-        <?php foreach($products as $product): ?>
-            <div class="product-card">
-                <img src="assets/images/default-product.jpg" alt="<?php echo $product['tenhang']; ?>" class="product-image">
-                <h3 class="product-title"><?php echo $product['tenhang']; ?></h3>
-                <p class="product-price"><?php echo number_format($product['dongia']); ?> VNĐ</p>
-                <p class="product-origin">Xuất xứ: <?php echo $product['nguongoc']; ?></p>
-                <p><?php echo $product['mota']; ?></p>
-                <form action="add_to_cart.php" method="post" class="add-to-cart-form">
-                    <input type="hidden" name="mahang" value="<?php echo $product['mahang']; ?>">
-                    <input type="number" name="soluong" value="1" min="1" class="quantity-input">
-                    <button type="submit" class="add-to-cart">Thêm vào giỏ</button>
-                </form>
+    <!-- Hero Section -->
+    <section class="hero-section">
+        <div class="container">
+            <div class="row align-items-center">
+                <div class="col-md-6">
+                    <h1 class="display-4 fw-bold mb-4">Khám phá kho tài liệu</h1>
+                    <p class="lead mb-4">Truy cập hàng nghìn tài liệu chất lượng cao, chia sẻ kiến thức và học hỏi từ cộng đồng.</p>
+                    <div class="d-flex gap-3">
+                        <a href="search.php" class="btn btn-light btn-lg">
+                            <i class="fas fa-search me-2"></i>Tìm kiếm
+                        </a>
+                        <?php if (!isset($_SESSION['user_id'])): ?>
+                            <a href="login.php" class="btn btn-outline-light btn-lg">
+                                <i class="fas fa-user me-2"></i>Đăng nhập
+                            </a>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                <div class="col-md-6 d-none d-md-block">
+                    <img src="assets/images/hero.png" alt="Hero Image" class="img-fluid">
+                </div>
             </div>
-        <?php endforeach; ?>
+        </div>
+    </section>
+
+    <div class="container">
+        <!-- Tags Section -->
+        <section class="mb-5">
+            <h2 class="section-title">Danh mục tài liệu</h2>
+            <div class="d-flex flex-wrap gap-2">
+                <?php foreach ($tags as $tag): ?>
+                    <a href="documents.php?tag=<?php echo $tag['id']; ?>"
+                       class="tag-badge badge bg-primary bg-opacity-75 p-2">
+                        <?php echo htmlspecialchars($tag['name']); ?>
+                        <span class="badge bg-light text-primary ms-1">
+                            <?php echo $tag['doc_count']; ?>
+                        </span>
+                    </a>
+                <?php endforeach; ?>
+            </div>
+        </section>
+
+        <!-- Latest Documents -->
+        <section class="mb-5">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h2 class="section-title mb-0">Tài liệu mới nhất</h2>
+                <a href="documents.php?sort=latest" class="btn btn-outline-primary">
+                    Xem tất cả <i class="fas fa-arrow-right ms-2"></i>
+                </a>
+            </div>
+            <div class="row">
+                <?php foreach ($latest_docs as $doc): ?>
+                    <div class="col-md-4">
+                        <div class="card h-100">
+                            <div class="card-body">
+                                <h5 class="card-title">
+                                    <a href="view_document.php?id=<?php echo $doc['id']; ?>"
+                                       class="text-decoration-none text-dark">
+                                        <?php echo htmlspecialchars($doc['title']); ?>
+                                    </a>
+                                </h5>
+                                <p class="card-text text-muted">
+                                    <?php echo substr(htmlspecialchars($doc['content']), 0, 100); ?>...
+                                </p>
+                                <div class="mb-2">
+                                    <?php foreach (getDocumentTags($conn, $doc['id']) as $tag): ?>
+                                        <a href="documents.php?tag=<?php echo $tag['id']; ?>"
+                                           class="badge bg-secondary text-decoration-none me-1">
+                                            <?php echo htmlspecialchars($tag['name']); ?>
+                                        </a>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                            <div class="card-footer bg-transparent">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <small class="text-muted">
+                                        <i class="fas fa-user me-1"></i>
+                                        <?php echo htmlspecialchars($doc['uploader_name']); ?>
+                                    </small>
+                                    <div>
+                                        <small class="text-muted me-2">
+                                            <i class="fas fa-heart text-danger"></i>
+                                            <?php echo $doc['like_count']; ?>
+                                        </small>
+                                        <small class="text-muted">
+                                            <i class="fas fa-comment text-primary"></i>
+                                            <?php echo $doc['comment_count']; ?>
+                                        </small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        </section>
+
+        <!-- Popular Documents -->
+        <section class="mb-5">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h2 class="section-title mb-0">Tài liệu phổ biến</h2>
+                <a href="documents.php?sort=popular" class="btn btn-outline-primary">
+                    Xem tất cả <i class="fas fa-arrow-right ms-2"></i>
+                </a>
+            </div>
+            <div class="row">
+                <?php foreach ($popular_docs as $doc): ?>
+                    <div class="col-md-4">
+                        <div class="card h-100">
+                            <div class="card-body">
+                                <h5 class="card-title">
+                                    <a href="view_document.php?id=<?php echo $doc['id']; ?>"
+                                       class="text-decoration-none text-dark">
+                                        <?php echo htmlspecialchars($doc['title']); ?>
+                                    </a>
+                                </h5>
+                                <p class="card-text text-muted">
+                                    <?php echo substr(htmlspecialchars($doc['content']), 0, 100); ?>...
+                                </p>
+                                <div class="mb-2">
+                                    <?php foreach (getDocumentTags($conn, $doc['id']) as $tag): ?>
+                                        <a href="documents.php?tag=<?php echo $tag['id']; ?>"
+                                           class="badge bg-secondary text-decoration-none me-1">
+                                            <?php echo htmlspecialchars($tag['name']); ?>
+                                        </a>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                            <div class="card-footer bg-transparent">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <small class="text-muted">
+                                        <i class="fas fa-user me-1"></i>
+                                        <?php echo htmlspecialchars($doc['uploader_name']); ?>
+                                    </small>
+                                    <div>
+                                        <small class="text-muted me-2">
+                                            <i class="fas fa-heart text-danger"></i>
+                                            <?php echo $doc['like_count']; ?>
+                                        </small>
+                                        <small class="text-muted">
+                                            <i class="fas fa-comment text-primary"></i>
+                                            <?php echo $doc['comment_count']; ?>
+                                        </small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        </section>
     </div>
 
-    <div class="pagination">
-        <?php for($i = 1; $i <= $total_pages; $i++): ?>
-            <a href="?page=<?php echo $i; ?>" <?php echo ($page == $i) ? 'class="active"' : ''; ?>><?php echo $i; ?></a>
-        <?php endfor; ?>
-    </div>
-
-    <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const forms = document.querySelectorAll('.add-to-cart-form');
-        const successMessage = document.getElementById('success-message');
-
-        forms.forEach(form => {
-            form.addEventListener('submit', function(e) {
-                e.preventDefault();
-
-                fetch(form.action, {
-                    method: 'POST',
-                    body: new FormData(form)
-                })
-                .then(response => response.text())
-                .then(() => {
-                    successMessage.style.display = 'block';
-                    setTimeout(() => {
-                        successMessage.style.display = 'none';
-                    }, 3000);
-                });
-            });
-        });
-    });
-    </script>
+    <?php include 'includes/footer.php'; ?>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
